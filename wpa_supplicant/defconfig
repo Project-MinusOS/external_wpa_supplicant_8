@@ -507,10 +507,7 @@ CONFIG_IEEE80211AX=y
 
 # IEEE 802.11be EHT support (mainly for AP mode)
 # CONFIG_IEEE80211AX is mandatory for setting CONFIG_IEEE80211BE.
-# Note: This is experimental and work in progress. The definitions are still
-# subject to change and this should not be expected to interoperate with the
-# final IEEE 802.11be version.
-#CONFIG_IEEE80211BE=y
+CONFIG_IEEE80211BE=y
 
 # Wireless Network Management (IEEE Std 802.11v-2011)
 # Note: This is experimental and not complete implementation.
@@ -627,19 +624,12 @@ CONFIG_IBSS_RSN=y
 # Mesh Networking (IEEE 802.11s)
 #CONFIG_MESH=y
 
-# Background scanning modules
-# These can be used to request wpa_supplicant to perform background scanning
-# operations for roaming within an ESS (same SSID). See the bgscan parameter in
-# the wpa_supplicant.conf file for more details.
-# Periodic background scans based on signal strength
-CONFIG_BGSCAN_SIMPLE=y
 # Learn channels used by the network and try to avoid bgscans on other
 # channels (experimental)
 #CONFIG_BGSCAN_LEARN=y
 
 # Opportunistic Wireless Encryption (OWE)
-# Experimental implementation of draft-harkins-owe-07.txt
-#CONFIG_OWE=y
+CONFIG_OWE=y
 
 # Device Provisioning Protocol (DPP) (also known as Wi-Fi Easy Connect)
 CONFIG_DPP=y
@@ -691,3 +681,6 @@ CONFIG_DPP2=y
 
 # Wi-Fi Aware unsynchronized service discovery (NAN USD)
 #CONFIG_NAN_USD=y
+
+# Wi-Fi Aware (NAN) support
+#CONFIG_NAN=y

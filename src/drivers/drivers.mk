@@ -34,6 +34,8 @@ ifdef CONFIG_DRIVER_NL80211
 DRV_CFLAGS += -DCONFIG_DRIVER_NL80211
 DRV_OBJS += src/drivers/driver_nl80211.c
 DRV_OBJS += src/drivers/driver_nl80211_android.c
+DRV_OBJS += src/drivers/driver_nl80211_brcm.c
+DRV_OBJS += src/drivers/driver_nl80211_intel.c
 DRV_OBJS += src/drivers/driver_nl80211_capa.c
 DRV_OBJS += src/drivers/driver_nl80211_event.c
 DRV_OBJS += src/drivers/driver_nl80211_monitor.c
@@ -80,15 +82,6 @@ DRV_OBJS += src/drivers/driver_none.c
 endif
 
 ##### PURE AP DRIVERS
-
-ifdef CONFIG_DRIVER_HOSTAP
-DRV_AP_CFLAGS += -DCONFIG_DRIVER_HOSTAP
-DRV_AP_OBJS += src/drivers/driver_hostap.c
-CONFIG_WIRELESS_EXTENSION=y
-NEED_AP_MLME=y
-NEED_NETLINK=y
-NEED_LINUX_IOCTL=y
-endif
 
 ifdef CONFIG_DRIVER_ATHEROS
 DRV_AP_CFLAGS += -DCONFIG_DRIVER_ATHEROS

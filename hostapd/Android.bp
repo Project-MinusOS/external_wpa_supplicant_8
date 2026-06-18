@@ -249,6 +249,8 @@ filegroup {
         "src/ap/mbo_ap.c",
         "src/drivers/driver_nl80211.c",
         "src/drivers/driver_nl80211_android.c",
+        "src/drivers/driver_nl80211_brcm.c",
+        "src/drivers/driver_nl80211_intel.c",
         "src/drivers/driver_nl80211_capa.c",
         "src/drivers/driver_nl80211_event.c",
         "src/drivers/driver_nl80211_monitor.c",
@@ -399,6 +401,8 @@ cc_defaults {
     srcs: [
         "src/drivers/driver_nl80211.c",
         "src/drivers/driver_nl80211_android.c",
+        "src/drivers/driver_nl80211_brcm.c",
+        "src/drivers/driver_nl80211_intel.c",
         "src/drivers/driver_nl80211_capa.c",
         "src/drivers/driver_nl80211_event.c",
         "src/drivers/driver_nl80211_monitor.c",

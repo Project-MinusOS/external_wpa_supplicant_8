@@ -2,7 +2,7 @@
  * wpa_supplicant - DPP
  * Copyright (c) 2017, Qualcomm Atheros, Inc.
  * Copyright (c) 2018-2020, The Linux Foundation
- * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -29,7 +29,7 @@
 #include "scan.h"
 #include "notify.h"
 #include "dpp_supplicant.h"
-#include "aidl/vendor/aidl.h"
+#include "aidl/aidl.h"
 
 
 static int wpas_dpp_listen_start(struct wpa_supplicant *wpa_s,
@@ -335,17 +335,17 @@ static char * wpas_dpp_scan_channel_list(struct wpa_supplicant *wpa_s)
 	u8 last_op_class = 0;
 	int res;
 
-	if (!wpa_s->last_scan_freqs || !wpa_s->num_last_scan_freqs)
+	len = int_array_len(wpa_s->last_scan_freqs);
+	if (!len)
 		return NULL;
 
-	len = wpa_s->num_last_scan_freqs * 8;
-	str = os_zalloc(len);
+	str = os_zalloc(len * 8);
 	if (!str)
 		return NULL;
 	end = str + len;
 	pos = str;
 
-	for (i = 0; i < wpa_s->num_last_scan_freqs; i++) {
+	for (i = 0; wpa_s->last_scan_freqs[i]; i++) {
 		enum hostapd_hw_mode mode;
 		u8 op_class, channel;
 
@@ -1438,6 +1438,21 @@ static struct wpa_ssid * wpas_dpp_add_network(struct wpa_supplicant *wpa_s,
 		return NULL;
 	wpas_notify_network_added(wpa_s, ssid);
 	wpa_config_set_network_defaults(ssid);
+	if (wpa_s->drv_capa_known &&
+	    (wpa_s->drv_enc & WPA_DRIVER_CAPA_ENC_GCMP)) {
+		ssid->pairwise_cipher |= WPA_CIPHER_GCMP;
+		ssid->group_cipher |= WPA_CIPHER_GCMP;
+	}
+	if (wpa_s->drv_capa_known &&
+	    (wpa_s->drv_enc & WPA_DRIVER_CAPA_ENC_GCMP_256)) {
+		ssid->pairwise_cipher |= WPA_CIPHER_GCMP_256;
+		ssid->group_cipher |= WPA_CIPHER_GCMP_256;
+	}
+	if (wpa_s->drv_capa_known &&
+	    (wpa_s->drv_enc & WPA_DRIVER_CAPA_ENC_CCMP_256)) {
+		ssid->pairwise_cipher |= WPA_CIPHER_CCMP_256;
+		ssid->group_cipher |= WPA_CIPHER_CCMP_256;
+	}
 	ssid->disabled = 1;
 
 	ssid->ssid = os_malloc(conf->ssid_len);

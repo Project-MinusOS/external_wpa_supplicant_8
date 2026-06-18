@@ -993,15 +993,31 @@ ChannelBandwidth getChannelBandwidth(struct hostapd_config *iconf)
 	wpa_printf(MSG_DEBUG, "getChannelBandwidth %d, isHT=%d, isHT40=%d",
 		   iconf->vht_oper_chwidth, iconf->ieee80211n,
 		   iconf->secondary_channel);
-	switch (iconf->vht_oper_chwidth) {
+
+	enum oper_chan_width chanwidth = iconf->vht_oper_chwidth;
+#ifdef CONFIG_IEEE80211AX
+	if (iconf->ieee80211ax) {
+		chanwidth = iconf->he_oper_chwidth;
+		wpa_printf(MSG_DEBUG, "getChannelBandwidth, he_oper_chwidth = %d",
+			iconf->he_oper_chwidth);
+	}
+#endif /* CONFIG_IEEE80211AX */
+#ifdef CONFIG_IEEE80211BE
+	if (iconf->ieee80211be) {
+		chanwidth = iconf->eht_oper_chwidth;
+        wpa_printf(MSG_DEBUG, "getChannelBandwidth, eht_oper_chwidth = %d",
+			iconf->eht_oper_chwidth);
+	}
+#endif
+	switch (chanwidth) {
 	case CONF_OPER_CHWIDTH_80MHZ:
 		return ChannelBandwidth::BANDWIDTH_80;
 	case CONF_OPER_CHWIDTH_80P80MHZ:
 		return ChannelBandwidth::BANDWIDTH_80P80;
-		break;
 	case CONF_OPER_CHWIDTH_160MHZ:
 		return ChannelBandwidth::BANDWIDTH_160;
-		break;
+	case CONF_OPER_CHWIDTH_320MHZ:
+		return ChannelBandwidth::BANDWIDTH_320;
 	case CONF_OPER_CHWIDTH_USE_HT:
 		if (iconf->ieee80211n) {
 			return iconf->secondary_channel != 0 ?
@@ -1287,9 +1303,11 @@ std::vector<uint8_t>  generateRandomOweSsid()
 		std::size_t j = 0;
 		for (i = 0; i < interfaces_->count; i++) {
 			struct hostapd_iface *iface = interfaces_->iface[i];
-
 			for (j = 0; j < iface->num_bss; j++) {
 				struct hostapd_data *iface_hapd = iface->bss[j];
+				if (os_strcmp(iface_hapd->conf->iface, br_name.c_str()) != 0) {
+					continue;
+				}
 				if (hostapd_enable_iface(iface_hapd->iface) < 0) {
 					wpa_printf(
 					MSG_ERROR, "Enabling interface %s failed on %zu",
@@ -1315,9 +1333,9 @@ struct hostapd_data * hostapd_get_iface_by_link_id(struct hapd_interfaces *inter
 
 		for (j = 0; j < iface->num_bss; j++) {
 			struct hostapd_data *hapd = iface->bss[j];
-
-			if (link_id == hapd->mld_link_id)
+			if (hapd->conf->mld_ap && link_id == hapd->mld_link_id) {
 				return hapd;
+			}
 		}
 	}
 #endif /* CONFIG_IEEE80211BE */
@@ -1571,11 +1589,24 @@ struct hostapd_data * hostapd_get_iface_by_link_id(struct hapd_interfaces *inter
 	// interfaces to be removed
 	std::vector<std::string> interfaces;
 	bool is_error = false;
-
 	const auto it = br_interfaces_.find(iface_name);
+	struct hostapd_data *hapd = hostapd_get_iface(interfaces_, iface_name.c_str());
 	if (it != br_interfaces_.end()) {
-		// In case bridge, remove managed interfaces
-		interfaces = it->second;
+#ifdef CONFIG_IEEE80211BE
+		if (hapd && hapd->conf->mld_ap) {
+			wpa_printf(MSG_INFO, "Remove MLO interface %s", iface_name.c_str());
+			// MLO bridged interface cases
+			for (size_t i = 0; i < it->second.size(); i++) {
+				interfaces.push_back(iface_name);
+			}
+        } else {
+#endif
+			// The non MLO bridged interface is found, remove managed instances
+			wpa_printf(MSG_INFO, "Remove bridged interface %s", iface_name.c_str());
+			interfaces = it->second;
+#ifdef CONFIG_IEEE80211BE
+		}
+#endif
 		br_interfaces_.erase(iface_name);
 	} else {
 		// else remove current interface

@@ -961,11 +961,11 @@ struct crypto_cipher * crypto_cipher_init(enum crypto_cipher_alg alg,
 		cipher = EVP_des_cbc();
 		break;
 #endif /* OPENSSL_NO_DES */
-#ifndef OPENSSL_NO_RC2
-	case CRYPTO_CIPHER_ALG_RC2:
-		cipher = EVP_rc2_ecb();
+#ifndef OPENSSL_NO_NULL
+	case CRYPTO_CIPHER_NULL:
+		cipher = EVP_enc_null();
 		break;
-#endif /* OPENSSL_NO_RC2 */
+#endif /* OPENSSL_NO_NULL */
 	default:
 		os_free(ctx);
 		return NULL;
@@ -1879,6 +1879,36 @@ int pbkdf2_sha1(const char *passphrase, const u8 *ssid, size_t ssid_len,
 		return -1;
 	return 0;
 }
+
+
+#ifdef CONFIG_SHA256
+
+int pbkdf2_sha256(const char *passphrase, const u8 *salt, size_t salt_len,
+		  int iterations, u8 *buf, size_t buflen)
+{
+	if (PKCS5_PBKDF2_HMAC(passphrase, os_strlen(passphrase), salt,
+			      salt_len, iterations, EVP_sha256(), buflen,
+			      buf) != 1)
+		return -1;
+	return 0;
+}
+
+#endif /* CONFIG_SHA256 */
+
+
+#ifdef CONFIG_SHA384
+
+int pbkdf2_sha384(const char *passphrase, const u8 *salt, size_t salt_len,
+		  int iterations, u8 *buf, size_t buflen)
+{
+	if (PKCS5_PBKDF2_HMAC(passphrase, os_strlen(passphrase), salt,
+			      salt_len, iterations, EVP_sha384(), buflen,
+			      buf) != 1)
+		return -1;
+	return 0;
+}
+
+#endif /* CONFIG_SHA384 */
 
 
 int crypto_get_random(void *buf, size_t len)

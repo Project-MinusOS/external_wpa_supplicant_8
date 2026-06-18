@@ -534,7 +534,8 @@ enum frame_encryption {
 
 enum mlo_info_change_reason {
 	MLO_TID_TO_LINK_MAP = 0,
-	MLO_LINK_RECONFIG_AP_REMOVAL = 1
+	MLO_LINK_RECONFIG_AP_REMOVAL = 1,
+	MLO_LINK_DYNAMIC_RECONFIG = 2
 };
 
 enum sae_pwe {

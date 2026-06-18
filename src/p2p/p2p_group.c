@@ -26,6 +26,11 @@ struct p2p_group_member {
 	struct wpabuf *wfd_ie;
 	struct wpabuf *client_info;
 	u8 dev_capab;
+	unsigned int connection_ht:1;
+	unsigned int connection_vht:1;
+	unsigned int connection_he:1;
+	unsigned int connection_eht:1;
+	unsigned int connection_channel_bandwidth:5;
 };
 
 /**
@@ -637,7 +642,7 @@ static int p2p_group_remove_member(struct p2p_group *group, const u8 *addr)
 }
 
 
-int p2p_group_notif_assoc(struct p2p_group *group, const u8 *addr,
+int p2p_group_notif_assoc(struct p2p_group *group, struct sta_info *sta,
 			  const u8 *ie, size_t len)
 {
 	struct p2p_group_member *m;
@@ -645,15 +650,35 @@ int p2p_group_notif_assoc(struct p2p_group *group, const u8 *addr,
 	if (group == NULL)
 		return -1;
 
-	p2p_add_device(group->p2p, addr, 0, NULL, 0, ie, len, 0);
+	int ht = sta->ht_capabilities ? 1 : 0;
+	int vht = sta->vht_capabilities ? 1 : 0;
+	int he = sta->he_capab ? 1 : 0;
+	int bw = CHAN_WIDTH_20;
+
+	if (ht && (sta->ht_capabilities->ht_capabilities_info & HT_CAP_INFO_SUPP_CHANNEL_WIDTH_SET)) {
+		bw = CHAN_WIDTH_40;
+	}
+#ifdef CONFIG_IEEE80211AC
+	if (vht) {
+		bw = CHAN_WIDTH_80;
+	}
+#endif
+
+#ifdef CONFIG_IEEE80211AX
+	if (he) {
+		bw = CHAN_WIDTH_80;
+	}
+#endif
+
+	p2p_add_device(group->p2p, sta->addr, 0, NULL, 0, ie, len, 0);
 
 	m = os_zalloc(sizeof(*m));
 	if (m == NULL)
 		return -1;
-	os_memcpy(m->addr, addr, ETH_ALEN);
+	os_memcpy(m->addr, sta->addr, ETH_ALEN);
 	m->p2p_ie = ieee802_11_vendor_ie_concat(ie, len, P2P_IE_VENDOR_TYPE);
 	if (m->p2p_ie) {
-		m->client_info = p2p_build_client_info(addr, m->p2p_ie,
+		m->client_info = p2p_build_client_info(sta->addr, m->p2p_ie,
 						       &m->dev_capab,
 						       m->dev_addr);
 	}
@@ -661,16 +686,21 @@ int p2p_group_notif_assoc(struct p2p_group *group, const u8 *addr,
 	m->wfd_ie = ieee802_11_vendor_ie_concat(ie, len, WFD_IE_VENDOR_TYPE);
 #endif /* CONFIG_WIFI_DISPLAY */
 
-	p2p_group_remove_member(group, addr);
+	p2p_group_remove_member(group, sta->addr);
 
+	m->connection_ht = ht;
+	m->connection_vht = vht;
+	m->connection_he = he;
+	m->connection_channel_bandwidth = bw;
 	m->next = group->members;
 	group->members = m;
 	group->num_members++;
 	p2p_dbg(group->p2p,  "Add client " MACSTR
-		" to group (p2p=%d wfd=%d client_info=%d); num_members=%u/%u",
-		MAC2STR(addr), m->p2p_ie ? 1 : 0, m->wfd_ie ? 1 : 0,
+		" to group (p2p=%d wfd=%d client_info=%d); num_members=%u/%u ht=%d vht=%d he=%d bandwidth=%d",
+		MAC2STR(sta->addr), m->p2p_ie ? 1 : 0, m->wfd_ie ? 1 : 0,
 		m->client_info ? 1 : 0,
-		group->num_members, group->cfg->max_clients);
+		group->num_members, group->cfg->max_clients,
+		m->connection_ht, m->connection_vht, m->connection_he, m->connection_channel_bandwidth);
 	if (group->num_members == group->cfg->max_clients)
 		group->beacon_update = 1;
 	p2p_group_update_ies(group);
@@ -1176,6 +1206,28 @@ int p2p_group_get_common_freqs(struct p2p_group *group, int *common_freqs,
 
 	os_memset(common_freqs, 0, *num * sizeof(int));
 	*num = p2p_channels_to_freqs(&intersect, common_freqs, *num);
+
+	return 0;
+}
+
+int p2p_group_get_member_connection_info(struct p2p_group *group, const u8 *member_addr,
+				struct p2p_member_connection_info *out_info)
+{
+	struct p2p_group_member *member;
+
+	if (!group || !member_addr || !out_info)
+		return -1;
+
+	member = p2p_group_get_client_iface(group, member_addr);
+	if (!member) {
+		return -1;
+	}
+
+	out_info->connection_ht = member->connection_ht;
+	out_info->connection_vht = member->connection_vht;
+	out_info->connection_he = member->connection_he;
+	out_info->connection_eht = member->connection_eht;
+	out_info->connection_channel_bandwidth = member->connection_channel_bandwidth;
 
 	return 0;
 }

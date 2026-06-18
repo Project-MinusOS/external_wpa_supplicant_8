@@ -137,6 +137,16 @@ struct wpa_interface {
 		WPA_IFACE_MATCHED
 	} matched;
 #endif /* CONFIG_MATCH_IFACE */
+
+	/**
+	 * nan_mgmt - Interface used for NAN management (NAN Device operations)
+	 */
+	bool nan_mgmt;
+
+	/**
+	 * nan_data - Interface used for NAN data path operations
+	 */
+	bool nan_data;
 };
 
 /**
@@ -260,6 +270,16 @@ struct wpa_params {
 	 */
 	int match_iface_count;
 #endif /* CONFIG_MATCH_IFACE */
+
+	/**
+	 * show_details - Whether to show config parsing details in debug log
+	 */
+	bool show_details;
+
+	/**
+	 * proc_coord_dir - Process coordination directory
+	 */
+	const char *proc_coord_dir;
 };
 
 struct p2p_srv_bonjour {
@@ -290,9 +310,11 @@ struct wpa_global {
 	size_t drv_count;
 	struct os_time suspend_time;
 	struct p2p_data *p2p;
+	struct pr_data *pr;
 	struct wpa_supplicant *p2p_init_wpa_s;
 	struct wpa_supplicant *p2p_group_formation;
 	struct wpa_supplicant *p2p_invite_group;
+	struct wpa_supplicant *pr_init_wpa_s;
 	u8 p2p_dev_addr[ETH_ALEN];
 	struct os_reltime p2p_go_wait_client;
 	struct dl_list p2p_srv_bonjour; /* struct p2p_srv_bonjour */
@@ -321,6 +343,10 @@ struct wpa_global {
 #endif /* CONFIG_WIFI_DISPLAY */
 
 	struct psk_list_entry *add_psk; /* From group formation */
+
+#ifdef CONFIG_PROCESS_COORDINATION
+	struct proc_coord *pc;
+#endif /* CONFIG_PROCESS_COORDINATION */
 };
 
 
@@ -652,6 +678,7 @@ struct active_scs_elem {
 	struct dl_list list;
 	u8 scs_id;
 	enum scs_response_status status;
+	struct scs_desc_elem desc_elem;
 };
 
 struct dscp_policy_data {
@@ -761,6 +788,7 @@ struct wpa_supplicant {
 	} links[MAX_NUM_MLD_LINKS];
 	u8 *last_con_fail_realm;
 	size_t last_con_fail_realm_len;
+	bool sta_roaming_disabled;
 
 	/* Selected configuration (based on Beacon/ProbeResp WPA IE) */
 	int pairwise_cipher;
@@ -932,8 +960,7 @@ struct wpa_supplicant {
 
 	struct wpa_ssid_value *ssids_from_scan_req;
 	unsigned int num_ssids_from_scan_req;
-	int *last_scan_freqs;
-	unsigned int num_last_scan_freqs;
+	int *last_scan_freqs; /* int_array */
 	unsigned int suitable_network;
 	unsigned int no_suitable_network;
 
@@ -958,6 +985,9 @@ struct wpa_supplicant {
 	/* extended capabilities supported by the driver */
 	const u8 *extended_capa, *extended_capa_mask;
 	unsigned int extended_capa_len;
+
+	/* EML and MLD capabilities supported by the driver */
+	u16 eml_capa, mld_capa;
 
 	int max_scan_ssids;
 	int max_sched_scan_ssids;
@@ -1138,6 +1168,8 @@ struct wpa_supplicant {
 	int p2p_in_invitation;
 	int p2p_retry_limit;
 	int p2p_invite_go_freq;
+	bool p2p_pairing_setup;
+	bool p2p_pairing_cache;
 	int pending_invite_ssid_id;
 	int show_group_started;
 	u8 go_dev_addr[ETH_ALEN];
@@ -1618,9 +1650,12 @@ struct wpa_supplicant {
 	struct wpa_radio_work *pasn_auth_work;
 	unsigned int pasn_count;
 	struct pasn_auth *pasn_params;
+	bool urnm_mfpr_x20;
+	bool disable_urnm_mfpr;
 #ifdef CONFIG_P2P
 	struct wpa_radio_work *p2p_pasn_auth_work;
 #endif /* CONFIG_P2P */
+	struct wpa_radio_work *pr_pasn_auth_work;
 #endif /* CONFIG_PASN */
 
 	bool is_6ghz_enabled;
@@ -1643,7 +1678,7 @@ struct wpa_supplicant {
 #ifdef CONFIG_NAN_USD
 	struct nan_de *nan_de;
 	struct wpa_radio_work *nan_usd_listen_work;
-	struct wpa_radio_work *nan_usd_tx_work;
+	struct wpa_radio_work *nan_tx_work;
 #endif /* CONFIG_NAN_USD */
 
 	bool ssid_verified;
@@ -1651,6 +1686,24 @@ struct wpa_supplicant {
 	u64 first_beacon_tsf;
 	unsigned int beacons_checked;
 	unsigned int next_beacon_check;
+
+	bool scs_reconfigure;
+
+	bool nan_mgmt;
+	bool nan_data;
+
+#ifdef CONFIG_NAN
+#define MAX_NAN_RADIOS 2
+	struct nan_capa nan_capa;
+	struct nan_data *nan;
+	struct nan_cluster_config nan_cluster_config;
+	u8 schedule_sequence_id;
+	struct nan_schedule_config nan_sched[MAX_NAN_RADIOS];
+	struct wpa_freq_range_list nan_disallowed_freqs;
+	u16 nan_max_bw;
+	u16 nan_supported_csids;
+	unsigned int nan_ndi_ndp_refcount; /* Active NDP count on this NDI */
+#endif
 };
 
 
@@ -1748,6 +1801,7 @@ struct wpa_supplicant * wpa_supplicant_get_iface(struct wpa_global *global,
 struct wpa_global * wpa_supplicant_init(struct wpa_params *params);
 int wpa_supplicant_run(struct wpa_global *global);
 void wpa_supplicant_deinit(struct wpa_global *global);
+int wpa_supplicant_parse_config(const char *fname);
 
 int wpa_supplicant_scard_init(struct wpa_supplicant *wpa_s,
 			      struct wpa_ssid *ssid);
@@ -1782,7 +1836,6 @@ int wpas_update_random_addr(struct wpa_supplicant *wpa_s,
 			    enum wpas_mac_addr_style style,
 			    struct wpa_ssid *ssid);
 int wpas_update_random_addr_disassoc(struct wpa_supplicant *wpa_s);
-void add_freq(int *freqs, int *num_freqs, int freq);
 
 int wpas_get_op_chan_phy(int freq, const u8 *ies, size_t ies_len,
 			 u8 *op_class, u8 *chan, u8 *phy_type);
@@ -1796,6 +1849,7 @@ int wpas_twt_send_teardown(struct wpa_supplicant *wpa_s, u8 flags);
 
 void wpas_rrm_reset(struct wpa_supplicant *wpa_s);
 void wpas_rrm_process_neighbor_rep(struct wpa_supplicant *wpa_s,
+				   const u8 *da, const u8 *sa,
 				   const u8 *report, size_t report_len);
 int wpas_rrm_send_neighbor_rep_request(struct wpa_supplicant *wpa_s,
 				       const struct wpa_ssid_value *ssid,
@@ -1907,7 +1961,8 @@ void wnm_bss_keep_alive_deinit(struct wpa_supplicant *wpa_s);
 int wpa_supplicant_fast_associate(struct wpa_supplicant *wpa_s);
 int wpa_wps_supplicant_fast_associate(struct wpa_supplicant *wpa_s);
 struct wpa_bss * wpa_supplicant_pick_network(struct wpa_supplicant *wpa_s,
-					     struct wpa_ssid **selected_ssid);
+					     struct wpa_ssid **selected_ssid,
+					     bool clear_ignorelist);
 int wpas_temp_disabled(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid);
 void wpa_supplicant_update_channel_list(struct wpa_supplicant *wpa_s,
 					struct channel_list_changed *info);
@@ -2031,19 +2086,20 @@ int wpas_send_mscs_req(struct wpa_supplicant *wpa_s);
 void wpas_populate_mscs_descriptor_ie(struct robust_av_data *robust_av,
 				      struct wpabuf *buf);
 void wpas_handle_robust_av_recv_action(struct wpa_supplicant *wpa_s,
-				       const u8 *src, const u8 *buf,
-				       size_t len);
+				       const u8 *dst, const u8 *src,
+				       const u8 *buf, size_t len);
 void wpas_handle_assoc_resp_mscs(struct wpa_supplicant *wpa_s, const u8 *bssid,
 				 const u8 *ies, size_t ies_len);
 int wpas_send_scs_req(struct wpa_supplicant *wpa_s);
+int wpas_scs_reconfigure(struct wpa_supplicant *wpa_s);
 void free_up_tclas_elem(struct scs_desc_elem *elem);
 void free_up_scs_desc(struct scs_robust_av_data *data);
 void wpas_handle_robust_av_scs_recv_action(struct wpa_supplicant *wpa_s,
-					   const u8 *src, const u8 *buf,
-					   size_t len);
+					   const u8 *dst, const u8 *src,
+					   const u8 *buf, size_t len);
 void wpas_scs_deinit(struct wpa_supplicant *wpa_s);
 void wpas_handle_qos_mgmt_recv_action(struct wpa_supplicant *wpa_s,
-				      const u8 *src,
+				      const u8 *dst, const u8 *src,
 				      const u8 *buf, size_t len);
 void wpas_dscp_deinit(struct wpa_supplicant *wpa_s);
 int wpas_send_dscp_response(struct wpa_supplicant *wpa_s,
@@ -2079,5 +2135,14 @@ bool wpas_ap_supports_rsn_overriding_2(struct wpa_supplicant *wpa_s,
 				       struct wpa_bss *bss);
 int wpas_get_owe_trans_network(const u8 *owe_ie, const u8 **bssid,
 			       const u8 **ssid, size_t *ssid_len);
+
+static inline bool wpas_is_nan_iface(struct wpa_supplicant *wpa_s)
+{
+#if defined(CONFIG_NAN)
+	return wpa_s->nan_mgmt || wpa_s->nan_data;
+#else
+	return false;
+#endif
+}
 
 #endif /* WPA_SUPPLICANT_I_H */

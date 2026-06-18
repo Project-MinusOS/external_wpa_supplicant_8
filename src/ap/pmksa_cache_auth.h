@@ -33,6 +33,7 @@ struct rsn_pmksa_cache_entry {
 	struct radius_class_data radius_class;
 	u8 eap_type_authsrv;
 	struct vlan_description *vlan_desc;
+	int sae_vlan_id;
 	int opportunistic;
 
 	u64 acct_multi_session_id;
@@ -45,6 +46,7 @@ struct rsn_pmksa_cache *
 pmksa_cache_auth_init(void (*free_cb)(struct rsn_pmksa_cache_entry *entry,
 				      void *ctx), void *ctx);
 void pmksa_cache_auth_deinit(struct rsn_pmksa_cache *pmksa);
+void pmksa_cache_auth_set_ctx(struct rsn_pmksa_cache *cache, void *ctx);
 struct rsn_pmksa_cache_entry *
 pmksa_cache_auth_get(struct rsn_pmksa_cache *pmksa,
 		     const u8 *spa, const u8 *pmkid);

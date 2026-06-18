@@ -661,6 +661,12 @@ static void wpa_auth_pmksa_free_cb(struct rsn_pmksa_cache_entry *entry,
 {
 	struct wpa_authenticator *wpa_auth = ctx;
 	wpa_auth_for_each_sta(wpa_auth, wpa_auth_pmksa_clear_cb, entry);
+
+	/* Remove matching PMKID from the driver, if it had been added, e.g.,
+	 * by external SAE authentication */
+	if (wpa_auth->cb->remove_pmkid)
+		wpa_auth->cb->remove_pmkid(wpa_auth->cb_ctx, entry->spa,
+					   entry->pmkid);
 }
 
 
@@ -945,6 +951,7 @@ void wpa_deinit(struct wpa_authenticator *wpa_auth)
 			 * authenticator and start rekey timer.
 			 */
 			next_pa->primary_auth = true;
+			pmksa_cache_auth_set_ctx(next_pa->ml_pmksa, next_pa);
 			if (next_pa->conf.wpa_group_rekey)
 				eloop_register_timeout(
 					next_pa->conf.wpa_group_rekey,
@@ -1139,6 +1146,7 @@ static void wpa_free_sta_sm(struct wpa_state_machine *sm)
 #ifdef CONFIG_DPP2
 	wpabuf_clear_free(sm->dpp_z);
 #endif /* CONFIG_DPP2 */
+	wpabuf_free(sm->sae_pw_id);
 	bin_clear_free(sm, sizeof(*sm));
 }
 
@@ -4194,6 +4202,11 @@ static u8 * ieee80211w_kde_add(struct wpa_state_machine *sm, u8 *pos)
 			  NULL, 0);
 	forced_memzero(&igtk, sizeof(igtk));
 
+	if (gsm->vlan_id) {
+		wpa_printf(MSG_DEBUG, "Fetch BIGTK from default VLAN");
+		gsm = wpa_auth->group;
+	}
+
 	if (wpa_auth->conf.tx_bss_auth) {
 		wpa_auth = wpa_auth->conf.tx_bss_auth;
 		conf = &wpa_auth->conf;
@@ -4298,7 +4311,7 @@ static u8 * replace_ie(const char *name, const u8 *old_buf, size_t *len, u8 eid,
 void wpa_auth_ml_get_key_info(struct wpa_authenticator *a,
 			      struct wpa_auth_ml_link_key_info *info,
 			      bool mgmt_frame_prot, bool beacon_prot,
-			      bool rekey)
+			      bool rekey, int vlan_id)
 {
 	struct wpa_group *gsm = a->group;
 	u8 rsc[WPA_KEY_RSC_LEN];
@@ -4306,6 +4319,9 @@ void wpa_auth_ml_get_key_info(struct wpa_authenticator *a,
 	wpa_printf(MSG_DEBUG,
 		   "MLD: Get group key info: link_id=%u, IGTK=%u, BIGTK=%u",
 		   info->link_id, mgmt_frame_prot, beacon_prot);
+
+	if (vlan_id)
+		gsm = wpa_select_vlan_wpa_group(gsm, vlan_id);
 
 	info->gtkidx = gsm->GN & 0x03;
 	info->gtk = gsm->GTK[gsm->GN - 1];
@@ -4331,6 +4347,11 @@ void wpa_auth_ml_get_key_info(struct wpa_authenticator *a,
 	if (!beacon_prot)
 		return;
 
+	if (gsm->vlan_id) {
+		wpa_printf(MSG_DEBUG, "Fetch BIGTK from default VLAN");
+		gsm = a->group;
+	}
+
 	if (a->conf.tx_bss_auth) {
 		a = a->conf.tx_bss_auth;
 		gsm = a->group;
@@ -4348,17 +4369,16 @@ void wpa_auth_ml_get_key_info(struct wpa_authenticator *a,
 
 static void wpa_auth_get_ml_key_info(struct wpa_authenticator *wpa_auth,
 				     struct wpa_auth_ml_key_info *info,
-				     bool rekey)
+				     bool rekey, int vlan_id)
 {
 	if (!wpa_auth->cb->get_ml_key_info)
 		return;
 
-	wpa_auth->cb->get_ml_key_info(wpa_auth->cb_ctx, info, rekey);
+	wpa_auth->cb->get_ml_key_info(wpa_auth->cb_ctx, info, rekey, vlan_id);
 }
 
 
-static size_t wpa_auth_ml_group_kdes_len(struct wpa_state_machine *sm,
-					 u16 req_links)
+size_t wpa_auth_ml_group_kdes_len(struct wpa_state_machine *sm, u16 req_links)
 {
 	struct wpa_authenticator *wpa_auth;
 	size_t kde_len = 0;
@@ -4409,8 +4429,8 @@ static size_t wpa_auth_ml_group_kdes_len(struct wpa_state_machine *sm,
 }
 
 
-static u8 * wpa_auth_ml_group_kdes(struct wpa_state_machine *sm, u8 *pos,
-				   u16 req_links)
+u8 * wpa_auth_ml_group_kdes(struct wpa_state_machine *sm, u8 *pos,
+			    u16 req_links)
 {
 	struct wpa_auth_ml_key_info ml_key_info;
 	unsigned int i, link_id;
@@ -4438,7 +4458,8 @@ static u8 * wpa_auth_ml_group_kdes(struct wpa_state_machine *sm, u8 *pos,
 	}
 	ml_key_info.n_mld_links = i;
 
-	wpa_auth_get_ml_key_info(sm->wpa_auth, &ml_key_info, rekey);
+	wpa_auth_get_ml_key_info(sm->wpa_auth, &ml_key_info, rekey,
+				 sm->group->vlan_id);
 
 	/* Add MLO GTK KDEs */
 	for (i = 0; i < ml_key_info.n_mld_links; i++) {
@@ -4471,7 +4492,7 @@ static u8 * wpa_auth_ml_group_kdes(struct wpa_state_machine *sm, u8 *pos,
 	}
 
 	if (!sm->mgmt_frame_prot) {
-		wpa_printf(MSG_DEBUG, "RSN: MLO Group KDE len = %ld",
+		wpa_printf(MSG_DEBUG, "RSN: MLO Group KDE len = %td",
 			   pos - start);
 		return pos;
 	}
@@ -4514,7 +4535,7 @@ static u8 * wpa_auth_ml_group_kdes(struct wpa_state_machine *sm, u8 *pos,
 	}
 
 	if (!sm->wpa_auth->conf.beacon_prot) {
-		wpa_printf(MSG_DEBUG, "RSN: MLO Group KDE len = %ld",
+		wpa_printf(MSG_DEBUG, "RSN: MLO Group KDE len = %td",
 			   pos - start);
 		return pos;
 	}
@@ -4557,7 +4578,7 @@ static u8 * wpa_auth_ml_group_kdes(struct wpa_state_machine *sm, u8 *pos,
 		pos += ml_key_info.links[i].igtk_len;
 	}
 
-	wpa_printf(MSG_DEBUG, "RSN: MLO Group KDE len = %ld", pos - start);
+	wpa_printf(MSG_DEBUG, "RSN: MLO Group KDE len = %td", pos - start);
 	return pos;
 }
 
@@ -4747,13 +4768,106 @@ static u8 * wpa_auth_ml_kdes(struct wpa_state_machine *sm, u8 *pos)
 	}
 
 	wpa_printf(MSG_DEBUG,
-		   "RSN: MLO Link KDEs and RSN Override Link KDEs len = %ld",
+		   "RSN: MLO Link KDEs and RSN Override Link KDEs len = %td",
 		   pos - start);
 	pos = wpa_auth_ml_group_kdes(sm, pos, KDE_ALL_LINKS);
 #endif /* CONFIG_IEEE80211BE */
 
 	return pos;
 }
+
+
+#ifdef CONFIG_SAE
+static u8 * add_sae_pw_ids(struct wpa_state_machine *sm, u8 *pos, u8 *end)
+{
+	static const size_t max_padding = 8;
+	u8 *start = pos, *len;
+	unsigned int i;
+	struct wpa_auth_config *conf = &sm->wpa_auth->conf;
+	u8 *data, *dpos;
+	unsigned int counter;
+	size_t pw_id_len = wpabuf_len(sm->sae_pw_id);
+	struct os_time t;
+	size_t kde_len;
+
+	wpa_printf(MSG_DEBUG, "RSN: Add SAE Password Identifiers KDE (num=%u)",
+		   conf->sae_pw_id_num);
+	wpa_hexdump_buf(MSG_DEBUG, "RSN: Real SAE Password Identifier",
+			sm->sae_pw_id);
+	data = os_malloc(pw_id_len + max_padding + 4 + 4);
+	if (!data)
+		return NULL;
+
+	if (end - pos < 2 + RSN_SELECTOR_LEN + 1) {
+		pos = NULL;
+		goto fail;
+	}
+	*pos++ = WLAN_EID_VENDOR_SPECIFIC;
+	len = pos++; /* Length to be filled */
+	RSN_SELECTOR_PUT(pos, RSN_KEY_DATA_SAE_PW_IDS);
+	pos += RSN_SELECTOR_LEN;
+
+	*pos++ = 0; /* Flags */
+
+	counter = sm->sae_pw_id_counter + conf->sae_pw_id_num;
+
+	os_get_time(&t);
+
+	WPA_PUT_BE32(data, t.sec);
+	os_memcpy(data + 4, wpabuf_head(sm->sae_pw_id), pw_id_len);
+
+	for (i = 0; i < conf->sae_pw_id_num; i++) {
+		size_t pad_len, dlen, elen;
+
+		pad_len = 1 + os_random() % max_padding;
+		dpos = data + 4 + pw_id_len;
+		os_memset(dpos, 0, pad_len);
+		dpos += pad_len;
+		WPA_PUT_BE32(dpos, counter);
+		dpos += 4;
+		dlen = dpos - data;
+		elen = dlen + AES_BLOCK_SIZE;
+		counter++;
+
+		kde_len = (pos - len - 1) + (1 + elen);
+		if ((size_t) (end - pos) < 1 + elen || kde_len > 255) {
+			wpa_printf(MSG_INFO,
+				   "RSN: Not enough room in the buffer for a new SAE Password Identifier - send only %u",
+				   i);
+			break;
+		}
+
+		*pos++ = elen;
+		if (aes_siv_encrypt(conf->sae_pw_id_key,
+				    sizeof(conf->sae_pw_id_key),
+				    data, dlen, 0, NULL, NULL, pos) < 0) {
+			wpa_printf(MSG_INFO,
+				   "RSN: Failed to encrypt SAE Password Identifier");
+			pos = NULL;
+			goto fail;
+		}
+		pos += elen;
+	}
+
+	kde_len = pos - len - 1;
+	if (kde_len > 255) {
+		wpa_printf(MSG_INFO,
+			   "RSN: SAE Password Identifiers do not fit in a KDE");
+		wpa_hexdump_key(MSG_DEBUG, "RSN: KDE", start, pos - start);
+		pos = NULL;
+		goto fail;
+	}
+
+	*len = kde_len;
+
+	wpa_hexdump_key(MSG_DEBUG, "RSN: SAE Password Identifiers KDE",
+			start, pos - start);
+
+fail:
+	os_free(data);
+	return pos;
+}
+#endif /* CONFIG_SAE */
 
 
 SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
@@ -4771,6 +4885,9 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
 #else /* CONFIG_IEEE80211BE */
 	bool is_mld = false;
 #endif /* CONFIG_IEEE80211BE */
+#ifdef CONFIG_SAE
+	bool sae_pw_ids = false;
+#endif /* CONFIG_SAE */
 
 	SM_ENTRY_MA(WPA_PTK, PTKINITNEGOTIATING, wpa_ptk);
 	sm->TimeoutEvt = false;
@@ -4971,6 +5088,17 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
 	if (sm->ssid_protection)
 		kde_len += 2 + conf->ssid_len;
 
+#ifdef CONFIG_SAE
+	if (wpa_key_mgmt_sae(sm->wpa_key_mgmt) &&
+	    conf->sae_pw_id_num &&
+	    sm->sae_pw_id &&
+	    ieee802_11_rsnx_capab(sm->rsnxe,
+				  WLAN_RSNX_CAPAB_SAE_PW_ID_CHANGE)) {
+		kde_len += 2 + 255;
+		sae_pw_ids = true;
+	}
+#endif /* CONFIG_SAE */
+
 #ifdef CONFIG_TESTING_OPTIONS
 	if (conf->eapol_m3_elements)
 		kde_len += wpabuf_len(conf->eapol_m3_elements);
@@ -5100,6 +5228,23 @@ SM_STATE(WPA_PTK, PTKINITNEGOTIATING)
 		os_memcpy(pos, conf->ssid, conf->ssid_len);
 		pos += conf->ssid_len;
 	}
+
+#ifdef CONFIG_SAE
+	if (sae_pw_ids) {
+		u8 *npos;
+
+		npos = add_sae_pw_ids(sm, pos, kde + kde_len);
+		if (!npos) {
+			wpa_printf(MSG_DEBUG,
+				   "RSN: Failed to add SAE Password Identifiers KDE");
+			/* Ignore this since it is not a fatal error for the
+			 * Authenticator and the STA can decide whether to
+			 * proceed without getting new identifiers. */
+		} else {
+			pos = npos;
+		}
+	}
+#endif /* CONFIG_SAE */
 
 #ifdef CONFIG_TESTING_OPTIONS
 	if (conf->eapol_m3_elements) {
@@ -5454,8 +5599,9 @@ SM_STATE(WPA_PTK_GROUP, REKEYNEGOTIATING)
 	sm->TimeoutEvt = false;
 	/* Send EAPOL(1, 1, 1, !Pair, G, RSC, GNonce, MIC(PTK), GTK[GN]) */
 	os_memset(rsc, 0, WPA_KEY_RSC_LEN);
-	if (gsm->wpa_group_state == WPA_GROUP_SETKEYSDONE)
+	if (gsm->wpa_group_state == WPA_GROUP_SETKEYSDONE && !is_mld)
 		wpa_auth_get_seqnum(sm->wpa_auth, NULL, gsm->GN, rsc);
+
 	wpa_auth_logger(sm->wpa_auth, wpa_auth_get_spa(sm), LOGGER_DEBUG,
 			"sending 1/2 msg of Group Key Handshake");
 
@@ -5684,6 +5830,11 @@ static int wpa_gtk_update(struct wpa_authenticator *wpa_auth,
 		wpa_hexdump_key(MSG_DEBUG, "IGTK",
 				group->IGTK[group->GN_igtk - 4], len);
 	}
+
+	/* Skip BIGTK generation for groups with a non-zero VLAN ID since only
+	 * a single BIGTK is shared for all VLANs in a BSS. */
+	if (group->vlan_id)
+		return ret;
 
 	if (!wpa_auth->non_tx_beacon_prot &&
 	     !wpa_auth_pmf_enabled(conf))
@@ -6013,7 +6164,10 @@ static int wpa_group_config_group_keys(struct wpa_authenticator *wpa_auth,
 				     KEY_FLAG_GROUP_TX_DEFAULT) < 0)
 			ret = -1;
 
-		if (ret || !conf->beacon_prot)
+		/* Skip setting of BIGTK for groups with a non-zero VLAN ID
+		 * since only a single BIGTK is shared for all VLANs in a BSS.
+		 */
+		if (ret || !conf->beacon_prot || group->vlan_id)
 			return ret;
 		if (wpa_auth->conf.tx_bss_auth) {
 			wpa_auth = wpa_auth->conf.tx_bss_auth;
@@ -6555,9 +6709,10 @@ int wpa_auth_pmksa_add_preauth(struct wpa_authenticator *wpa_auth,
 
 int wpa_auth_pmksa_add_sae(struct wpa_authenticator *wpa_auth, const u8 *addr,
 			   const u8 *pmk, size_t pmk_len, const u8 *pmkid,
-			   int akmp, bool is_ml)
+			   int akmp, bool is_ml, int vlan_id)
 {
 	struct rsn_pmksa_cache *pmksa = wpa_auth->pmksa;
+	struct rsn_pmksa_cache_entry *entry;
 	const u8 *aa = wpa_auth->addr;
 
 	if (wpa_auth->conf.disable_pmksa_caching)
@@ -6574,11 +6729,14 @@ int wpa_auth_pmksa_add_sae(struct wpa_authenticator *wpa_auth, const u8 *addr,
 	}
 #endif /* CONFIG_IEEE80211BE */
 
-	if (pmksa_cache_auth_add(pmksa, pmk, pmk_len, pmkid, NULL, 0, aa, addr,
-				 0, NULL, akmp))
-		return 0;
+	entry = pmksa_cache_auth_add(pmksa, pmk, pmk_len, pmkid, NULL, 0,
+				     aa, addr, 0, NULL, akmp);
+	if (!entry)
+		return -1;
 
-	return -1;
+	entry->sae_vlan_id = vlan_id;
+
+	return 0;
 }
 
 
@@ -7699,4 +7857,58 @@ bool wpa_auth_sm_known_sta_identification(struct wpa_state_machine *sm,
 	}
 
 	return true;
+}
+
+
+void wpa_reset_assoc_sm_info(struct wpa_state_machine *assoc_sm,
+			     struct wpa_authenticator *wpa_auth,
+			     u8 mld_assoc_link_id)
+{
+#ifdef CONFIG_IEEE80211BE
+	assoc_sm->wpa_auth = wpa_auth;
+	assoc_sm->mld_assoc_link_id = mld_assoc_link_id;
+#endif /* CONFIG_IEEE80211BE */
+}
+
+
+#ifdef CONFIG_IEEE80211BE
+/* wpa_select_vlan_wpa_group - Traverse through the wpa_group list and select
+ * the one that matches the vlan_id.
+ *
+ * @gsm: Head of wpa_group list
+ * @vlan_id: vlan_id used to search the group key state machine data that
+ *	     corresponds to the specified VLAN group
+ * Returns: Pointer to wpa_group that corresponds to the VLAN group on success,
+ *	    or pointer to the head of wpa_group list that was passed in.
+ */
+struct wpa_group * wpa_select_vlan_wpa_group(struct wpa_group *gsm, int vlan_id)
+{
+	struct wpa_group *vlan_gsm = gsm;
+
+	while (vlan_gsm) {
+		if (vlan_gsm->vlan_id == vlan_id)
+			break;
+
+		vlan_gsm = vlan_gsm->next;
+	}
+
+	if (!vlan_gsm) {
+		wpa_printf(MSG_DEBUG, "%s: VLAN group not found", __func__);
+		vlan_gsm = gsm;
+	}
+
+	return vlan_gsm;
+}
+#endif /* CONFIG_IEEE80211BE */
+
+
+void wpa_auth_set_sae_pw_id(struct wpa_state_machine *sm,
+			    const struct wpabuf *pw_id,
+			    unsigned int counter)
+{
+	if (sm) {
+		wpabuf_free(sm->sae_pw_id);
+		sm->sae_pw_id = wpabuf_dup(pw_id);
+		sm->sae_pw_id_counter = counter;
+	}
 }

@@ -9,15 +9,14 @@
 #include "includes.h"
 
 #include "common.h"
+#include "config.h"
 #include "wpa_supplicant_i.h"
 #include "config_ssid.h"
 #include "bgscan.h"
 
 
 static const struct bgscan_ops * bgscan_modules[] = {
-#ifdef CONFIG_BGSCAN_SIMPLE
 	&bgscan_simple_ops,
-#endif /* CONFIG_BGSCAN_SIMPLE */
 #ifdef CONFIG_BGSCAN_LEARN
 	&bgscan_learn_ops,
 #endif /* CONFIG_BGSCAN_LEARN */
@@ -28,6 +27,10 @@ static const struct bgscan_ops * bgscan_modules[] = {
 int bgscan_init(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid,
 		const char *name)
 {
+	if (!wpa_s->conf->bgscan_enabled) {
+		return 0;
+	}
+
 	const char *params;
 	size_t nlen;
 	int i;
@@ -70,6 +73,10 @@ int bgscan_init(struct wpa_supplicant *wpa_s, struct wpa_ssid *ssid,
 
 void bgscan_deinit(struct wpa_supplicant *wpa_s)
 {
+	if (!wpa_s->conf->bgscan_enabled) {
+		return;
+	}
+
 	if (wpa_s->bgscan && wpa_s->bgscan_priv) {
 		wpa_printf(MSG_DEBUG, "bgscan: Deinitializing module '%s'",
 			   wpa_s->bgscan->name);
@@ -83,15 +90,24 @@ void bgscan_deinit(struct wpa_supplicant *wpa_s)
 int bgscan_notify_scan(struct wpa_supplicant *wpa_s,
 		       struct wpa_scan_results *scan_res)
 {
+	if (!wpa_s->conf->bgscan_enabled) {
+		return 0;
+	}
+
 	if (wpa_s->bgscan && wpa_s->bgscan_priv)
 		return wpa_s->bgscan->notify_scan(wpa_s->bgscan_priv,
 						  scan_res);
+
 	return 0;
 }
 
 
 void bgscan_notify_beacon_loss(struct wpa_supplicant *wpa_s)
 {
+	if (!wpa_s->conf->bgscan_enabled) {
+		return;
+	}
+
 	if (wpa_s->bgscan && wpa_s->bgscan_priv)
 		wpa_s->bgscan->notify_beacon_loss(wpa_s->bgscan_priv);
 }
@@ -101,6 +117,10 @@ void bgscan_notify_signal_change(struct wpa_supplicant *wpa_s, int above,
 				 int current_signal, int current_noise,
 				 int current_txrate)
 {
+	if (!wpa_s->conf->bgscan_enabled) {
+		return;
+	}
+
 	if (wpa_s->bgscan && wpa_s->bgscan_priv)
 		wpa_s->bgscan->notify_signal_change(wpa_s->bgscan_priv, above,
 						    current_signal,

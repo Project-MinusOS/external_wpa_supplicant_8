@@ -150,30 +150,12 @@ static struct mesh_conf * mesh_config_create(struct wpa_supplicant *wpa_s,
 }
 
 
-static void wpas_mesh_copy_groups(struct hostapd_data *bss,
-				  struct wpa_supplicant *wpa_s)
-{
-	int num_groups;
-	size_t groups_size;
-
-	for (num_groups = 0; wpa_s->conf->sae_groups[num_groups] > 0;
-	     num_groups++)
-		;
-
-	groups_size = (num_groups + 1) * sizeof(wpa_s->conf->sae_groups[0]);
-	bss->conf->sae_groups = os_malloc(groups_size);
-	if (bss->conf->sae_groups)
-		os_memcpy(bss->conf->sae_groups, wpa_s->conf->sae_groups,
-			  groups_size);
-}
-
-
 static int wpas_mesh_init_rsn(struct wpa_supplicant *wpa_s)
 {
 	struct hostapd_iface *ifmsh = wpa_s->ifmsh;
 	struct wpa_ssid *ssid = wpa_s->current_ssid;
 	struct hostapd_data *bss = ifmsh->bss[0];
-	static int default_groups[] = { 19, 20, 21, 25, 26, -1 };
+	static int default_groups[] = { 19, 20, 21, 25, 26, 0 };
 	const char *password;
 	size_t len;
 
@@ -189,14 +171,12 @@ static int wpas_mesh_init_rsn(struct wpa_supplicant *wpa_s)
 	bss->conf->wpa = ssid->proto;
 	bss->conf->wpa_key_mgmt = ssid->key_mgmt;
 
-	if (wpa_s->conf->sae_groups && wpa_s->conf->sae_groups[0] > 0) {
-		wpas_mesh_copy_groups(bss, wpa_s);
-	} else {
-		bss->conf->sae_groups = os_memdup(default_groups,
-						  sizeof(default_groups));
-		if (!bss->conf->sae_groups)
-			return -1;
-	}
+	if (wpa_s->conf->sae_groups && wpa_s->conf->sae_groups[0] > 0)
+		bss->conf->sae_groups = int_array_dup(wpa_s->conf->sae_groups);
+	else
+		bss->conf->sae_groups = int_array_dup(default_groups);
+	if (!bss->conf->sae_groups)
+		return -1;
 
 	len = os_strlen(password);
 	bss->conf->ssid.wpa_passphrase = dup_binstr(password, len);
@@ -281,7 +261,7 @@ static int wpas_mesh_complete(struct wpa_supplicant *wpa_s)
 
 	params->ies = ifmsh->mconf->rsn_ie;
 	params->ie_len = ifmsh->mconf->rsn_ie_len;
-	params->basic_rates = ifmsh->basic_rates;
+	params->basic_rates = ifmsh->bss[0]->basic_rates;
 	params->conf.flags |= WPA_DRIVER_MESH_CONF_FLAG_HT_OP_MODE;
 	params->conf.ht_opmode = ifmsh->bss[0]->iface->ht_op_mode;
 
@@ -386,8 +366,7 @@ static int wpa_supplicant_mesh_init(struct wpa_supplicant *wpa_s,
 	struct hostapd_data *bss;
 	struct hostapd_config *conf;
 	struct mesh_conf *mconf;
-	int basic_rates_erp[] = { 10, 20, 55, 60, 110, 120, 240, -1 };
-	int rate_len;
+	int basic_rates_erp[] = { 10, 20, 55, 60, 110, 120, 240, 0 };
 	int frequency;
 	bool is_dfs;
 	u8 chan;
@@ -548,24 +527,16 @@ static int wpa_supplicant_mesh_init(struct wpa_supplicant *wpa_s,
 		 * advertised in beacons match the one in peering frames, sigh.
 		 */
 		if (conf->hw_mode == HOSTAPD_MODE_IEEE80211G) {
-			conf->basic_rates = os_memdup(basic_rates_erp,
-						      sizeof(basic_rates_erp));
-			if (!conf->basic_rates)
+			bss->conf->basic_rates = os_memdup(
+				basic_rates_erp,
+				sizeof(basic_rates_erp));
+			if (!bss->conf->basic_rates)
 				goto out_free;
 		}
 	} else {
-		rate_len = 0;
-		while (1) {
-			if (ssid->mesh_basic_rates[rate_len] < 1)
-				break;
-			rate_len++;
-		}
-		conf->basic_rates = os_calloc(rate_len + 1, sizeof(int));
-		if (conf->basic_rates == NULL)
+		bss->conf->basic_rates = int_array_dup(ssid->mesh_basic_rates);
+		if (bss->conf->basic_rates == NULL)
 			goto out_free;
-		os_memcpy(conf->basic_rates, ssid->mesh_basic_rates,
-			  rate_len * sizeof(int));
-		conf->basic_rates[rate_len] = -1;
 	}
 
 	/* While it can enhance performance to switch the primary channel, which

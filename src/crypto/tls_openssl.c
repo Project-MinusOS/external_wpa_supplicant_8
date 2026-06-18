@@ -1380,7 +1380,13 @@ void tls_deinit(void *ssl_ctx)
 
 	if (data->tls_session_lifetime > 0) {
 		wpa_printf(MSG_DEBUG, "OpenSSL: Flush sessions");
+#if OPENSSL_VERSION_NUMBER >= 0x30400000L && \
+	!defined(LIBRESSL_VERSION_NUMBER) && \
+	!defined(OPENSSL_IS_BORINGSSL)
+		SSL_CTX_flush_sessions_ex(ssl, 0);
+#else /* OpenSSL version >= 3.4 */
 		SSL_CTX_flush_sessions(ssl, 0);
+#endif /* OpenSSL version >= 3.4 */
 		wpa_printf(MSG_DEBUG, "OpenSSL: Flush sessions - done");
 	}
 	while ((sess_data = dl_list_first(&context->sessions,
@@ -1444,9 +1450,8 @@ static int tls_is_pin_error(unsigned int err)
 #endif /* OPENSSL_NO_ENGINE */
 
 
-// Imported from system/security/keystore-engine. This method
-// is not used by the mainline supplicant.
-#if defined(ANDROID) && !defined(MAINLINE_SUPPLICANT)
+// Imported from system/security/keystore-engine
+#if defined(ANDROID)
 EVP_PKEY * EVP_PKEY_from_keystore(const char *key_id);
 #endif /* ANDROID */
 
@@ -1454,7 +1459,7 @@ static int tls_engine_init(struct tls_connection *conn, const char *engine_id,
 			   const char *pin, const char *key_id,
 			   const char *cert_id, const char *ca_cert_id)
 {
-#if defined(ANDROID) && !defined(MAINLINE_SUPPLICANT) && defined(OPENSSL_IS_BORINGSSL)
+#if defined(ANDROID) && defined(OPENSSL_IS_BORINGSSL)
 #if !defined(OPENSSL_NO_ENGINE)
 #error "This code depends on OPENSSL_NO_ENGINE being defined by BoringSSL."
 #endif
@@ -2737,7 +2742,27 @@ static int tls_verify_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
 	suffix_match = conn->suffix_match;
 	domain_match = conn->domain_match;
 
-	if (!preverify_ok && !conn->ca_cert_verify)
+	if (!conn->ca_cert_verify && depth == 0 &&
+	    !(conn->flags & TLS_CONN_DISABLE_TIME_CHECKS)) {
+		if (X509_cmp_current_time(X509_get_notBefore(err_cert)) > 0) {
+			wpa_printf(MSG_INFO,
+				   "OpenSSL: Server certificate is not valid at the current time");
+			err = X509_V_ERR_CERT_NOT_YET_VALID;
+			X509_STORE_CTX_set_error(x509_ctx, err);
+			preverify_ok = 0;
+		} else if (X509_cmp_current_time(X509_get_notAfter(err_cert)) <
+			   0) {
+			wpa_printf(MSG_INFO,
+				   "TLS: Server certificate has expired");
+			err = X509_V_ERR_CERT_HAS_EXPIRED;
+			X509_STORE_CTX_set_error(x509_ctx, err);
+			preverify_ok = 0;
+		}
+	}
+
+	if (!preverify_ok && !conn->ca_cert_verify &&
+	    !(err == X509_V_ERR_CERT_HAS_EXPIRED ||
+	      err == X509_V_ERR_CERT_NOT_YET_VALID))
 		preverify_ok = 1;
 	if (!preverify_ok && depth > 0 && conn->server_cert_only)
 		preverify_ok = 1;
@@ -2782,7 +2807,9 @@ static int tls_verify_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
 				err_str = "Server certificate mismatch";
 				err = X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN;
 				preverify_ok = 0;
-			} else if (!preverify_ok) {
+			} else if (!preverify_ok &&
+				   err != X509_V_ERR_CERT_HAS_EXPIRED &&
+				   err != X509_V_ERR_CERT_NOT_YET_VALID) {
 				/*
 				 * Certificate matches pinned certificate, allow
 				 * regardless of other problems.

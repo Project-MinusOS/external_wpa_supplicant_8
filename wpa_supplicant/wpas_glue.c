@@ -29,6 +29,7 @@
 #include "scan.h"
 #include "notify.h"
 #include "wpas_kay.h"
+#include "brcm_vendor.h"
 
 
 #ifndef CONFIG_NO_CONFIG_BLOBS
@@ -323,16 +324,19 @@ static void wpa_supplicant_eapol_cb(struct eapol_sm *eapol,
 		ieee802_1x_notify_create_actor(wpa_s, wpa_s->last_eapol_src);
 	}
 
+	if (result != EAPOL_SUPP_RESULT_SUCCESS) {
+		return;
+	}
 #if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
-	if (result != EAPOL_SUPP_RESULT_SUCCESS)                          
-#else                                                                     
-	if (result != EAPOL_SUPP_RESULT_SUCCESS ||                        
-		!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE_8021X))  
-#endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
-		return;                                                   
-
-#if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
-	if (wpa_ft_is_ft_protocol(wpa_s->wpa)) {
+	if (wpas_drv_get_chip_vendor_id(wpa_s) == OUI_BRCM) {
+		if (wpa_ft_is_ft_protocol(wpa_s->wpa)) {
+			return;
+		}
+	} else if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE_8021X)) {
+		return;
+	}
+#else
+	if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_4WAY_HANDSHAKE_8021X)) {
 		return;
 	}
 #endif /* CONFIG_DRIVER_NL80211_BRCM || CONFIG_DRIVER_NL80211_SYNA */
@@ -1438,7 +1442,7 @@ void wpas_transition_disable(struct wpa_supplicant *wpa_s, u8 bitmap)
 
 #if defined(CONFIG_DRIVER_NL80211_BRCM) || defined(CONFIG_DRIVER_NL80211_SYNA)
 	/* driver call for transition disable */
-	{
+	if (wpas_drv_get_chip_vendor_id(wpa_s) == OUI_BRCM) {
 		struct wpa_driver_associate_params params;
 
 		os_memset(&params, 0, sizeof(params));
@@ -1508,6 +1512,30 @@ static void wpa_supplicant_ssid_verified(void *_wpa_s)
 
 	wpa_s->ssid_verified = true;
 	wpa_msg(wpa_s, MSG_INFO, "RSN: SSID matched expected value");
+}
+
+
+static void wpa_supplicant_sae_pw_id_change(void *_wpa_s,
+					    struct wpabuf_array *wa)
+{
+	struct wpa_supplicant *wpa_s = _wpa_s;
+	struct wpa_ssid *ssid = wpa_s->current_ssid;
+
+	wpa_msg(wpa_s, MSG_INFO, "RSN: Received %u SAE Password Identifier(s)",
+		wa->num);
+	if (!ssid) {
+		wpabuf_array_free(wa);
+		return;
+	}
+
+	wpabuf_array_free(ssid->alt_sae_password_ids);
+	ssid->alt_sae_password_ids = wa;
+
+#ifndef CONFIG_NO_CONFIG_WRITE
+	if (wpa_s->conf->update_config &&
+	    wpa_config_write(wpa_s->confname, wpa_s->conf))
+		wpa_printf(MSG_DEBUG, "SAE: Failed to update configuration");
+#endif /* CONFIG_NO_CONFIG_WRITE */
 }
 
 #endif /* CONFIG_NO_WPA */
@@ -1580,6 +1608,7 @@ int wpa_supplicant_init_wpa(struct wpa_supplicant *wpa_s)
 #endif /* CONFIG_PASN */
 	ctx->notify_pmksa_cache_entry = wpa_supplicant_notify_pmksa_cache_entry;
 	ctx->ssid_verified = wpa_supplicant_ssid_verified;
+	ctx->sae_pw_id_change = wpa_supplicant_sae_pw_id_change;
 
 	wpa_s->wpa = wpa_sm_init(ctx);
 	if (wpa_s->wpa == NULL) {

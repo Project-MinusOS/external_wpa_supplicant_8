@@ -897,6 +897,14 @@ struct p2p_noa_desc {
 };
 
 /* p2p_group.c */
+struct p2p_member_connection_info {
+	unsigned int connection_ht:1;
+	unsigned int connection_vht:1;
+	unsigned int connection_he:1;
+	unsigned int connection_eht:1;
+	unsigned int connection_channel_bandwidth:5;
+};
+
 const u8 * p2p_group_get_interface_addr(struct p2p_group *group);
 u8 p2p_group_presence_req(struct p2p_group *group,
 			  const u8 *client_interface_addr,
@@ -910,7 +918,8 @@ void p2p_buf_add_group_info(struct p2p_group *group, struct wpabuf *buf,
 			    int max_clients);
 void p2p_group_buf_add_id(struct p2p_group *group, struct wpabuf *buf);
 int p2p_group_get_freq(struct p2p_group *group);
-
+int p2p_group_get_member_connection_info(struct p2p_group *group, const u8 *member_addr,
+				struct p2p_member_connection_info *out_info);
 
 void p2p_buf_add_action_hdr(struct wpabuf *buf, u8 subtype, u8 dialog_token);
 void p2p_buf_add_public_action_hdr(struct wpabuf *buf, u8 subtype,

@@ -1016,12 +1016,20 @@ bool int_array_equal(const int *a, const int *b)
 	if (alen != blen)
 		return false;
 
-	for (i = 0; i <= alen; i++) {
+	for (i = 0; i < alen; i++) {
 		if (!int_array_includes(b, a[i]))
 			return false;
 	}
 
 	return true;
+}
+
+
+int * int_array_dup(const int *a)
+{
+	if (!a)
+		return NULL;
+	return os_memdup(a, (int_array_len(a) + 1) * sizeof(int));
 }
 
 

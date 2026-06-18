@@ -72,7 +72,7 @@ mkconfig:
 		echo '.config exists - did not replace it'; \
 		exit 1; \
 	fi
-	echo CONFIG_DRIVER_HOSTAP=y >> .config
+	echo CONFIG_DRIVER_NL80211=y >> .config
 	echo CONFIG_DRIVER_WEXT=y >> .config
 
 $(DESTDIR)$(BINDIR)/%: %
@@ -276,9 +276,9 @@ CFLAGS += -DCONFIG_SAE
 OBJS += ../src/common/sae.o
 ifdef CONFIG_SAE_PK
 CFLAGS += -DCONFIG_SAE_PK
-NEED_AES_SIV=y
 OBJS += ../src/common/sae_pk.o
 endif
+NEED_AES_SIV=y
 NEED_ECC=y
 NEED_DH_GROUPS=y
 NEED_HMAC_SHA256_KDF=y
@@ -317,11 +317,36 @@ CFLAGS += -DCONFIG_DPP3
 endif
 endif
 
+ifdef CONFIG_NAN
+NEED_NAN=y
+CFLAGS += -DCONFIG_NAN
+endif
+
 ifdef CONFIG_NAN_USD
-OBJS += ../src/common/nan_de.o
-OBJS += nan_usd.o
 NEED_OFFCHANNEL=y
+NEED_NAN=y
 CFLAGS += -DCONFIG_NAN_USD
+endif
+
+ifdef CONFIG_PR
+OBJS += ../src/common/proximity_ranging.o
+OBJS += pr_supplicant.o
+CFLAGS += -DCONFIG_PR
+endif
+
+ifdef NEED_NAN
+OBJS += nan_supplicant.o
+OBJS += ../src/nan/nan.o
+OBJS += ../src/common/nan_de.o
+OBJS += ../src/nan/nan_util.o
+OBJS += ../src/nan/nan_ndp.o
+OBJS += ../src/nan/nan_ndl.o
+OBJS += ../src/nan/nan_crypto.o
+OBJS += ../src/nan/nan_sec.o
+OBJS += ../src/nan/nan_bootstrap.o
+ifdef CONFIG_PASN
+OBJS += ../src/nan/nan_pairing.o
+endif
 endif
 
 ifdef CONFIG_OWE
@@ -349,10 +374,6 @@ endif
 endif
 
 ifdef CONFIG_MBO
-CONFIG_WNM=y
-endif
-
-ifdef CONFIG_BGSCAN_SIMPLE
 CONFIG_WNM=y
 endif
 
@@ -1842,21 +1863,9 @@ OBJS_p += $(SHA1OBJS)
 OBJS_p += $(SHA256OBJS)
 OBJS_priv += $(SHA1OBJS)
 
-ifdef CONFIG_BGSCAN_SIMPLE
-CFLAGS += -DCONFIG_BGSCAN_SIMPLE
-OBJS += bgscan_simple.o
-NEED_BGSCAN=y
-endif
-
 ifdef CONFIG_BGSCAN_LEARN
 CFLAGS += -DCONFIG_BGSCAN_LEARN
 OBJS += bgscan_learn.o
-NEED_BGSCAN=y
-endif
-
-ifdef NEED_BGSCAN
-CFLAGS += -DCONFIG_BGSCAN
-OBJS += bgscan.o
 endif
 
 ifdef CONFIG_AUTOSCAN_EXPONENTIAL
@@ -1916,6 +1925,11 @@ OBJS += ../src/utils/json.o
 CFLAGS += -DCONFIG_JSON
 endif
 
+ifdef CONFIG_PROCESS_COORDINATION
+CFLAGS += -DCONFIG_PROCESS_COORDINATION
+OBJS += ../src/common/proc_coord.o
+endif
+
 ifdef CONFIG_MODULE_TESTS
 CFLAGS += -DCONFIG_MODULE_TESTS
 OBJS += wpas_module_tests.o
@@ -1924,6 +1938,10 @@ OBJS += ../src/common/common_module_tests.o
 OBJS += ../src/crypto/crypto_module_tests.o
 ifdef CONFIG_WPS
 OBJS += ../src/wps/wps_module_tests.o
+endif
+ifdef CONFIG_NAN
+OBJS += ../src/nan/nan_module_tests.o
+OBJS += ../src/nan/nan_module_test_cases.o
 endif
 endif
 

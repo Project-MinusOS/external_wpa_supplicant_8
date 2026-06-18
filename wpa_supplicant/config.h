@@ -29,7 +29,7 @@
 #define DEFAULT_P2P_INTRA_BSS 1
 #define DEFAULT_P2P_GO_MAX_INACTIVITY (5 * 60)
 #define DEFAULT_P2P_OPTIMIZE_LISTEN_CHAN 0
-#define DEFAULT_BSS_MAX_COUNT 200
+#define DEFAULT_BSS_MAX_COUNT 1000
 #define DEFAULT_BSS_EXPIRATION_AGE 180
 #define DEFAULT_BSS_EXPIRATION_SCAN_COUNT 2
 #define DEFAULT_MAX_NUM_STA 128
@@ -469,6 +469,11 @@ struct wpa_dev_ik {
 	 * pmkid - PMKID used in the previous connection with the device
 	 */
 	struct wpabuf *pmkid;
+
+	/**
+	 * akmp - AKMP suite used in the previous connection with the device
+	 */
+	int akmp;
 };
 
 
@@ -495,6 +500,7 @@ struct wpa_dev_ik {
 #define CFG_CHANGED_BGSCAN BIT(20)
 #define CFG_CHANGED_FT_PREPEND_PMKID BIT(21)
 #define CFG_CHANGED_DISABLE_BTM_NOTIFY BIT(22)
+#define CFG_CHANGED_P2P_DISABLED BIT(23)
 
 /**
  * struct wpa_config - wpa_supplicant configuration data
@@ -913,8 +919,6 @@ struct wpa_config {
 	int p2p_optimize_listen_chan;
 	int p2p_6ghz_disable;
 	int p2p_dfs_chan_enable;
-	bool p2p_pairing_setup;
-	bool p2p_pairing_cache;
 	int p2p_bootstrap_methods;
 	int p2p_pasn_type;
 	int p2p_comeback_after;
@@ -1756,6 +1760,29 @@ struct wpa_config {
 	int coloc_intf_reporting;
 
 	/**
+	* TODO (b/457805929): Replace the existing flag with a call to the Nl80211 attribute NL80211_ATTR_ROAM_SUPPORT.
+	*
+	* android_force_roaming_enabled - specific to some Android devices.
+	*
+	* 0 = CONFIG_NO_ROAMING will work as intended.
+	* 1 = Overrides the CONFIG_NO_ROAMING flag to force enable supplicant roaming.
+	*
+	*/
+	int android_force_roaming_enabled;
+
+	/**
+	*
+	* bgscan_enabled - Enable background scan
+	*
+	*  0: Disable background scan.
+	*  1: Enable background scan.
+	*
+	* By default, bgscan_enabled is disabled, equal 0.
+	*/
+	int bgscan_enabled;
+
+
+	/**
 	 * p2p_device_random_mac_addr - P2P Device MAC address policy default
 	 *
 	 * 0 = use permanent MAC address (the one set by default by the device
@@ -1923,13 +1950,33 @@ struct wpa_config {
 	struct wpabuf *wfa_gen_capa_supp;
 
 	/**
-	 * wfa_gen_capa_cert: Certified Generations (hexdump of a bit field)
+	 * disable_op_classes_80_80_mhz - Disable advertisement of 80+80 MHz
+	 * channel capabilities in the Supported Operating Classes element
 	 *
-	 * This has the same format as wfa_gen_capa_supp. This is an optional
-	 * field, but if included, shall have the same length as
-	 * wfa_gen_capa_supp.
+	 * By default, %wpa_supplicant tries to advertise 80+80 MHz channel
+	 * capabilities in the Supported Operating Classes element if the driver
+	 * supports this.
+	*/
+	bool disable_op_classes_80_80_mhz;
+
+	/* Indicates the types of PASN supported for Proximity Ranging */
+	int pr_pasn_type;
+
+	/* Indicates the preferred Proximity Ranging Role
+	 * 0: Prefer ranging initiator role (default)
+	 * 1: Prefer ranging responder role
 	 */
-	struct wpabuf *wfa_gen_capa_cert;
+	int pr_preferred_role;
+	/**
+	 * use_priv_cmd_mbo_cell_status - Use vendor private command for MBO cellular data status update
+	 *
+	 * This flag controls how the MBO cellular data is updated.
+	 * If set to 1, a vendor-specific driver command is used.
+	 * If set to 0, the standard wpas_mbo_update_cell_capa() function is called.
+	 * This allows runtime switching of the update mechanism via the wpa_supplicant
+	 * configuration file.
+	 */
+	int use_priv_cmd_mbo_cell_status;
 };
 
 
@@ -1994,7 +2041,8 @@ void wpa_config_debug_dump_networks(struct wpa_config *config);
 
 
 /* Prototypes for common functions from config.c */
-int wpa_config_process_global(struct wpa_config *config, char *pos, int line);
+int wpa_config_process_global(struct wpa_config *config, char *pos, int line,
+			      bool show_details);
 
 int wpa_config_get_num_global_field_names(void);
 
@@ -2008,6 +2056,7 @@ const char * wpa_config_get_global_field_name(unsigned int i, int *no_var);
  * configuration file)
  * @cfgp: Pointer to previously allocated configuration data or %NULL if none
  * @ro: Whether to mark networks from this configuration as read-only
+ * @show_details: Whether to show parsing errors and other details in debug log
  * Returns: Pointer to allocated configuration data or %NULL on failure
  *
  * This function reads configuration data, parses its contents, and allocates
@@ -2017,7 +2066,7 @@ const char * wpa_config_get_global_field_name(unsigned int i, int *no_var);
  * Each configuration backend needs to implement this function.
  */
 struct wpa_config * wpa_config_read(const char *name, struct wpa_config *cfgp,
-				    bool ro);
+				    bool ro, bool show_details);
 
 /**
  * wpa_config_write - Write or update configuration data

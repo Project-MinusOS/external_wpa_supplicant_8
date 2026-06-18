@@ -493,8 +493,12 @@ static u32 rsnxe_capab(struct wpa_auth_config *conf, int key_mgmt)
 		capab |= BIT(WLAN_RSNX_CAPAB_SECURE_LTF);
 	if (conf->secure_rtt)
 		capab |= BIT(WLAN_RSNX_CAPAB_SECURE_RTT);
-	if (conf->prot_range_neg)
-		capab |= BIT(WLAN_RSNX_CAPAB_URNM_MFPR);
+	if (conf->prot_range_neg) {
+		if (conf->urnm_mfpr)
+			capab |= BIT(WLAN_RSNX_CAPAB_URNM_MFPR);
+		if (conf->urnm_mfpr_x20)
+			capab |= BIT(WLAN_RSNX_CAPAB_URNM_MFPR_X20);
+	}
 	if (conf->ssid_protection)
 		capab |= BIT(WLAN_RSNX_CAPAB_SSID_PROTECTION);
 	if (conf->spp_amsdu)
@@ -1280,7 +1284,8 @@ wpa_validate_wpa_ie(struct wpa_authenticator *wpa_auth,
 		wpa_auth_vlogger(wpa_auth, sm->addr, LOGGER_DEBUG,
 				 "PMKID found from PMKSA cache eap_type=%d vlan=%d%s",
 				 sm->pmksa->eap_type_authsrv,
-				 vlan ? vlan->untagged : 0,
+				 vlan ? vlan->untagged :
+				 sm->pmksa->sae_vlan_id,
 				 (vlan && vlan->tagged[0]) ? "+" : "");
 		os_memcpy(wpa_auth->dot11RSNAPMKIDUsed, pmkid, PMKID_LEN);
 	}
@@ -1355,7 +1360,7 @@ wpa_validate_wpa_ie(struct wpa_authenticator *wpa_auth,
 	os_memcpy(sm->wpa_ie, wpa_ie, wpa_ie_len);
 	sm->wpa_ie_len = wpa_ie_len;
 
-	if (rsnxe && rsnxe_len) {
+	if (sm->wpa != WPA_VERSION_WPA && rsnxe && rsnxe_len) {
 		if (!sm->rsnxe || sm->rsnxe_len < rsnxe_len) {
 			os_free(sm->rsnxe);
 			sm->rsnxe = os_malloc(rsnxe_len);
@@ -1404,8 +1409,7 @@ int wpa_auth_uses_ocv(struct wpa_state_machine *sm)
 
 #ifdef CONFIG_OWE
 u8 * wpa_auth_write_assoc_resp_owe(struct wpa_state_machine *sm,
-				   u8 *pos, size_t max_len,
-				   const u8 *req_ies, size_t req_ies_len)
+				   u8 *pos, size_t max_len)
 {
 	int res;
 	struct wpa_auth_config *conf;
@@ -1438,8 +1442,7 @@ u8 * wpa_auth_write_assoc_resp_owe(struct wpa_state_machine *sm,
 #ifdef CONFIG_FILS
 
 u8 * wpa_auth_write_assoc_resp_fils(struct wpa_state_machine *sm,
-				    u8 *pos, size_t max_len,
-				    const u8 *req_ies, size_t req_ies_len)
+				    u8 *pos, size_t max_len)
 {
 	int res;
 

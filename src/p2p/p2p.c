@@ -4977,42 +4977,6 @@ void p2p_set_managed_oper(struct p2p_data *p2p, int enabled)
 }
 
 
-#ifdef CONFIG_TESTING_OPTIONS
-
-void p2p_set_pairing_setup(struct p2p_data *p2p, int pairing_setup)
-{
-	p2p_dbg(p2p, "Pairing Setup %s",
-		pairing_setup ? "Enabled" : "Disabled");
-	if (pairing_setup) {
-		p2p->cfg->pairing_config.pairing_capable = true;
-		p2p->cfg->pairing_config.enable_pairing_setup = true;
-		if (p2p->pairing_info)
-			p2p->pairing_info->enable_pairing_setup = true;
-	} else {
-		p2p->cfg->pairing_config.pairing_capable = false;
-		p2p->cfg->pairing_config.enable_pairing_setup = false;
-		if (p2p->pairing_info)
-			p2p->pairing_info->enable_pairing_setup = false;
-	}
-}
-
-
-void p2p_set_pairing_cache(struct p2p_data *p2p, int pairing_cache)
-{
-	p2p_dbg(p2p, "Pairing Cache %s",
-		pairing_cache ? "Enabled" : "Disabled");
-	if (pairing_cache) {
-		p2p->cfg->pairing_config.enable_pairing_cache = true;
-		if (p2p->pairing_info)
-			p2p->pairing_info->enable_pairing_cache = true;
-	} else {
-		p2p->cfg->pairing_config.enable_pairing_cache = false;
-		if (p2p->pairing_info)
-			p2p->pairing_info->enable_pairing_cache = false;
-	}
-}
-
-
 void p2p_set_bootstrapmethods(struct p2p_data *p2p, int bootstrap_methods)
 {
 	p2p_dbg(p2p, "Bootstraping methods: 0x%x", bootstrap_methods);
@@ -5075,8 +5039,6 @@ void p2p_set_invitation_op_freq(struct p2p_data *p2p, int freq)
 	p2p->cfg->inv_op_class = op_class;
 	p2p->cfg->inv_op_channel = channel;
 }
-
-#endif /* CONFIG_TESTING_OPTIONS */
 
 
 int p2p_config_get_random_social(struct p2p_config *p2p, u8 *op_class,
@@ -6197,7 +6159,7 @@ void p2p_process_usd_elems(struct p2p_data *p2p, const u8 *ies, u16 ies_len,
 		return;
 	}
 
-	if (os_strlen(msg.device_name) != 0)
+	if (msg.device_name[0])
 		os_memcpy(dev->info.device_name, msg.device_name,
 			  sizeof(dev->info.device_name));
 
@@ -6414,9 +6376,7 @@ static void p2p_pairing_set_password(struct pasn_data *pasn, u8 pasn_type,
 	}
 	pasn->pt = sae_derive_pt(pasn_groups, (const u8 *) P2P_PAIRING_SSID,
 				 os_strlen(P2P_PAIRING_SSID),
-				 (const u8 *) passphrase, len, NULL);
-	/* Set passphrase for pairing responder to validate PASN auth 1 frame */
-	pasn->password = passphrase;
+				 (const u8 *) passphrase, len, NULL, 0);
 }
 
 
@@ -6765,7 +6725,7 @@ static int p2p_pasn_handle_action_wrapper(struct p2p_data *p2p,
 		}
 	}
 
-	if (trans_seq == 1) {
+	if (trans_seq == WLAN_AUTH_TR_SEQ_PASN_AUTH1) {
 		if (ieee802_11_parse_elems(mgmt->u.auth.variable,
 					   len - offsetof(struct ieee80211_mgmt,
 							  u.auth.variable),
@@ -6827,7 +6787,7 @@ static int p2p_pasn_handle_action_wrapper(struct p2p_data *p2p,
 		} else {
 			p2p_dbg(p2p, "Invalid action frame wrapper in Auth1");
 		}
-	} else if (trans_seq == 2) {
+	} else if (trans_seq == WLAN_AUTH_TR_SEQ_PASN_AUTH2) {
 		if (data && data_len >= 1 && data[0] == P2P_INVITATION_RESP) {
 			p2p_process_invitation_resp(p2p, mgmt->sa, data + 1,
 						    data_len - 1);
@@ -6847,7 +6807,7 @@ static int p2p_pasn_handle_action_wrapper(struct p2p_data *p2p,
 		} else {
 			p2p_dbg(p2p, "Invalid action frame wrapper in Auth2");
 		}
-	} else if (trans_seq == 3) {
+	} else if (trans_seq == WLAN_AUTH_TR_SEQ_PASN_AUTH3) {
 		if (data && data_len >= 1 && data[0] == P2P_GO_NEG_CONF)
 			p2p_handle_go_neg_conf(p2p, mgmt->sa, data + 1,
 					       data_len - 1, true);
@@ -6957,12 +6917,8 @@ int p2p_prepare_data_element(struct p2p_data *p2p, const u8 *peer_addr)
 	if (p2p_pasn_add_encrypted_data(p2p, dev, extra_ies) < 0)
 		p2p_dbg(p2p, "Failed to add PASN encrypted elements");
 
-	pasn->extra_ies = os_memdup(wpabuf_head_u8(extra_ies),
-				    wpabuf_len(extra_ies));
-	if (!pasn->extra_ies)
-		goto out;
-	pasn->extra_ies_len = wpabuf_len(extra_ies);
-	ret = 0;
+	ret = pasn_set_extra_ies(pasn, wpabuf_head_u8(extra_ies),
+				 wpabuf_len(extra_ies));
 
 out:
 	wpabuf_free(extra_ies);
@@ -7210,13 +7166,14 @@ static int p2p_handle_pasn_auth(struct p2p_data *p2p, struct p2p_device *dev,
 		return -1;
 	}
 
-	if (auth_alg != WLAN_AUTH_PASN || auth_transaction == 2) {
+	if (auth_alg != WLAN_AUTH_PASN ||
+	    auth_transaction == WLAN_AUTH_TR_SEQ_PASN_AUTH2) {
 		p2p_dbg(p2p,
 			"PASN Responder: Not a PASN frame or unexpected Authentication frame, auth_alg=%d",
 			auth_alg);
 		return -1;
 	}
-	if (auth_transaction == 1) {
+	if (auth_transaction == WLAN_AUTH_TR_SEQ_PASN_AUTH1) {
 		pasn_type = p2p->cfg->pairing_config.pasn_type;
 		if (pasn_type & 0xc && pasn_type & 0x3) {
 			pasn_groups[0] = 20;
@@ -7226,7 +7183,8 @@ static int p2p_handle_pasn_auth(struct p2p_data *p2p, struct p2p_device *dev,
 		} else {
 			pasn_groups[0] = 19;
 		}
-		pasn->pasn_groups = pasn_groups;
+		os_free(pasn->pasn_groups);
+		pasn->pasn_groups = int_array_dup(pasn_groups);
 
 		if (p2p_pasn_handle_action_wrapper(p2p, dev, mgmt, len, freq,
 						   auth_transaction)) {
@@ -7240,7 +7198,7 @@ static int p2p_handle_pasn_auth(struct p2p_data *p2p, struct p2p_device *dev,
 				"PASN Responder: Handle Auth 1 failed");
 			return -1;
 		}
-	} else if (auth_transaction == 3) {
+	} else if (auth_transaction == WLAN_AUTH_TR_SEQ_PASN_AUTH3) {
 		if (handle_auth_pasn_3(pasn, p2p->cfg->dev_addr, mgmt->sa, mgmt,
 				       len) < 0) {
 			p2p_dbg(p2p,
@@ -7301,7 +7259,8 @@ int p2p_pasn_auth_rx(struct p2p_data *p2p, const struct ieee80211_mgmt *mgmt,
 				p2p->cfg->pasn_validate_pmkid);
 	auth_transaction = le_to_host16(mgmt->u.auth.auth_transaction);
 
-	if (dev->role == P2P_ROLE_PAIRING_INITIATOR && auth_transaction == 2) {
+	if (dev->role == P2P_ROLE_PAIRING_INITIATOR &&
+	    auth_transaction == WLAN_AUTH_TR_SEQ_PASN_AUTH2) {
 		if (p2p_pasn_handle_action_wrapper(p2p, dev, mgmt, len, freq,
 						   auth_transaction)) {
 			p2p_dbg(p2p,
@@ -7329,9 +7288,9 @@ void p2p_pasn_pmksa_set_pmk(struct p2p_data *p2p, const u8 *src, const u8 *dst,
 			    const u8 *pmk, size_t pmk_len, const u8 *pmkid)
 {
 	pasn_initiator_pmksa_cache_add(p2p->initiator_pmksa, src, dst, pmk,
-				       pmk_len, pmkid);
+				       pmk_len, pmkid, WPA_KEY_MGMT_SAE);
 	pasn_responder_pmksa_cache_add(p2p->responder_pmksa, src, dst, pmk,
-				       pmk_len, pmkid);
+				       pmk_len, pmkid, WPA_KEY_MGMT_SAE);
 }
 
 

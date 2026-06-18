@@ -2,6 +2,7 @@
  * wpa_supplicant - P2P
  * Copyright (c) 2009-2010, Atheros Communications
  * Copyright (c) 2010-2014, Jouni Malinen <j@w1.fi>
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * This software may be distributed under the terms of the BSD license.
  * See README for more details.
@@ -39,6 +40,7 @@
 #include "wps_supplicant.h"
 #include "p2p_supplicant.h"
 #include "wifi_display.h"
+#include "nan_supplicant.h"
 
 
 /*
@@ -1443,6 +1445,9 @@ static void wpas_p2p_group_started(struct wpa_supplicant *wpa_s,
 		   wpa_s->ifname, go ? "GO" : "client", ssid_txt, freq,
 		   MAC2STR(go_dev_addr), persistent ? " [PERSISTENT]" : "",
 		   extra);
+
+	if (go && is_zero_ether_addr(wpa_s->go_dev_addr))
+		os_memcpy(wpa_s->go_dev_addr, go_dev_addr, ETH_ALEN);
 }
 
 
@@ -2083,7 +2088,7 @@ static void wpas_start_gc(struct wpa_supplicant *wpa_s,
 			wpa_s->p2p_pmksa_entry = entry;
 		}
 		ssid->pmk_valid = true;
-	} else if (res->akmp == WPA_KEY_MGMT_SAE && res->sae_password[0]) {
+	} else if ((res->akmp & WPA_KEY_MGMT_SAE) && res->sae_password[0]) {
 		ssid->auth_alg = WPA_AUTH_ALG_SAE;
 		ssid->sae_password = os_strdup(res->sae_password);
 		if (!ssid->sae_password)
@@ -2095,7 +2100,10 @@ static void wpas_start_gc(struct wpa_supplicant *wpa_s,
 		ssid->psk_set = 1;
 	}
 	ssid->proto = WPA_PROTO_RSN;
-	ssid->key_mgmt = WPA_KEY_MGMT_SAE;
+	if (wpa_s->p2p_mode == WPA_P2P_MODE_WFD_PCC)
+		ssid->key_mgmt = WPA_KEY_MGMT_SAE | WPA_KEY_MGMT_PSK;
+	else
+		ssid->key_mgmt = WPA_KEY_MGMT_SAE;
 	ssid->pairwise_cipher = WPA_CIPHER_CCMP;
 	ssid->group_cipher = WPA_CIPHER_CCMP;
 	if (res->cipher)
@@ -2267,7 +2275,7 @@ static void p2p_go_configured(void *ctx, void *data)
 				       params->peer_device_addr,
 				       params->pmk, params->pmk_len,
 				       params->pmkid, WPA_KEY_MGMT_SAE,
-				       false);
+				       false, 0);
 		hostapd_add_pmkid(hapd, params->peer_device_addr,
 				  params->pmk, params->pmk_len,
 				  params->pmkid, WPA_KEY_MGMT_SAE);
@@ -2643,6 +2651,7 @@ do {                                    \
 	d->go_venue_group = s->go_venue_group;
 	d->go_venue_type = s->go_venue_type;
 	d->p2p_add_cli_chan = s->p2p_add_cli_chan;
+	d->disable_op_classes_80_80_mhz = s->disable_op_classes_80_80_mhz;
 }
 
 
@@ -2923,7 +2932,7 @@ static void wpas_set_go_security_config(void *ctx,
 				       params->peer_device_addr,
 				       params->pmk, params->pmk_len,
 				       params->pmkid, WPA_KEY_MGMT_SAE,
-				       false);
+				       false, 0);
 		hostapd_add_pmkid(hapd, params->peer_device_addr,
 				  params->pmk, params->pmk_len,
 				  params->pmkid, WPA_KEY_MGMT_SAE);
@@ -3959,7 +3968,7 @@ static void wpas_invitation_received(void *ctx, const u8 *sa, const u8 *bssid,
 				wpa_s->conf->p2p_go_edmg, NULL,
 				go ? P2P_MAX_INITIAL_CONN_WAIT_GO_REINVOKE : 0,
 				1, is_p2p_allow_6ghz(wpa_s->global->p2p), 0,
-				bssid, sa, pmkid, pmk, pmk_len);
+				bssid, sa, pmkid, pmk, pmk_len, false);
 		} else if (bssid) {
 			wpa_s->user_initiated_pd = 0;
 			wpa_msg_global(wpa_s, MSG_INFO,
@@ -4264,7 +4273,7 @@ static void wpas_invitation_result(void *ctx, int status, const u8 *new_ssid,
 				      P2P_MAX_INITIAL_CONN_WAIT_GO_REINVOKE :
 				      0, 1,
 				      is_p2p_allow_6ghz(wpa_s->global->p2p), 0,
-				      bssid, peer, pmkid, pmk, pmk_len);
+				      bssid, peer, pmkid, pmk, pmk_len, false);
 }
 
 
@@ -4522,7 +4531,8 @@ static enum chan_allowed wpas_p2p_verify_160mhz(struct wpa_supplicant *wpa_s,
 
 		if (!is_6ghz_op_class(op_class)) {
 			if (!(flags & HOSTAPD_CHAN_VHT_80MHZ_SUBCHANNEL) ||
-			    !(flags & HOSTAPD_CHAN_VHT_160MHZ_SUBCHANNEL))
+			    (!(flags & HOSTAPD_CHAN_VHT_160MHZ_SUBCHANNEL) &&
+			     !(flags & HOSTAPD_CHAN_AUTO_BW)))
 				return NOT_ALLOWED;
 		} else if (is_6ghz_op_class(op_class) &&
 			   (!(wpas_get_6ghz_he_chwidth_capab(mode) &
@@ -5334,7 +5344,7 @@ static void wpas_p2ps_prov_complete(void *ctx, enum p2p_status_code status,
 					WPAS_MODE_P2P_GO ?
 					P2P_MAX_INITIAL_CONN_WAIT_GO_REINVOKE :
 					0, 0, false, 0, NULL, NULL, NULL, NULL,
-					0);
+					0, false);
 			} else if (response_done) {
 				wpas_p2p_group_add(wpa_s, 1, freq,
 						   0, 0, 0, 0, 0, 0, false,
@@ -5460,7 +5470,7 @@ static int wpas_prov_disc_resp_cb(void *ctx)
 			persistent_go->mode == WPAS_MODE_P2P_GO ?
 			P2P_MAX_INITIAL_CONN_WAIT_GO_REINVOKE : 0, 0,
 			is_p2p_allow_6ghz(wpa_s->global->p2p), 0, NULL, NULL,
-			NULL, NULL, 0);
+			NULL, NULL, 0, false);
 	} else {
 		wpas_p2p_group_add(wpa_s, 1, freq, 0, 0, 0, 0, 0, 0,
 				   is_p2p_allow_6ghz(wpa_s->global->p2p),
@@ -6005,12 +6015,9 @@ int wpas_p2p_init(struct wpa_global *global, struct wpa_supplicant *wpa_s)
 				   "P2P: Failed to update configuration");
 	}
 
-	p2p.pairing_config.enable_pairing_setup =
-		wpa_s->conf->p2p_pairing_setup;
-	p2p.pairing_config.pairing_capable =
-		wpa_s->conf->p2p_pairing_setup;
-	p2p.pairing_config.enable_pairing_cache =
-		wpa_s->conf->p2p_pairing_cache;
+	p2p.pairing_config.enable_pairing_setup = wpa_s->p2p_pairing_setup;
+	p2p.pairing_config.pairing_capable = wpa_s->p2p_pairing_setup;
+	p2p.pairing_config.enable_pairing_cache = wpa_s->p2p_pairing_cache;
 	p2p.pairing_config.bootstrap_methods =
 		wpa_s->conf->p2p_bootstrap_methods;
 	p2p.pairing_config.pasn_type = wpa_s->conf->p2p_pasn_type;
@@ -6738,7 +6745,10 @@ static int wpas_p2p_join_start(struct wpa_supplicant *wpa_s, int freq,
 		iface_addr = wpa_s->pending_join_iface_addr;
 
 	if (wpa_s->pending_join_password[0]) {
-		res.akmp = WPA_KEY_MGMT_SAE;
+		if (wpa_s->p2p_mode == WPA_P2P_MODE_WFD_PCC)
+			res.akmp = WPA_KEY_MGMT_SAE | WPA_KEY_MGMT_PSK;
+		else
+			res.akmp = WPA_KEY_MGMT_SAE;
 		os_strlcpy(res.sae_password, wpa_s->pending_join_password,
 			   sizeof(res.sae_password));
 		os_memset(wpa_s->pending_join_password, 0,
@@ -7238,8 +7248,12 @@ int wpas_p2p_connect(struct wpa_supplicant *wpa_s, const u8 *peer_addr,
 	}
 
 #ifdef CONFIG_PASN
-	if (wpa_s->p2p2 && !wpa_s->p2p_pd_before_go_neg)
-		wpas_p2p_initiate_pasn_auth(wpa_s, peer_addr, force_freq);
+	if (wpa_s->p2p2 && !wpa_s->p2p_pd_before_go_neg) {
+		int listen_freq = p2p_get_listen_freq(wpa_s->global->p2p,
+						      peer_addr);
+
+		wpas_p2p_initiate_pasn_auth(wpa_s, peer_addr, listen_freq);
+	}
 #endif /* CONFIG_PASN */
 
 	return ret;
@@ -8321,7 +8335,7 @@ int wpas_p2p_group_add_persistent(struct wpa_supplicant *wpa_s,
 				  bool allow_6ghz, int retry_limit,
 				  const u8 *go_bssid, const u8 *dev_addr,
 				  const u8 *pmkid, const u8 *pmk,
-				  size_t pmk_len)
+				  size_t pmk_len, bool join)
 {
 	struct p2p_go_neg_results params;
 	int go = 0, freq;
@@ -8375,6 +8389,16 @@ int wpas_p2p_group_add_persistent(struct wpa_supplicant *wpa_s,
 		}
 	} else if (ssid->mode == WPAS_MODE_INFRA) {
 		freq = neg_freq;
+
+		if (wpa_s->p2p2 && join) {
+			if (ssid->passphrase)
+				os_strlcpy(wpa_s->pending_join_password,
+					   ssid->passphrase,
+					   sizeof(wpa_s->pending_join_password));
+			return wpas_p2p_join_start(wpa_s, 0, ssid->ssid,
+						   ssid->ssid_len);
+		}
+
 		if (freq <= 0 || !freq_included(wpa_s, channels, freq)) {
 			struct os_reltime now;
 			struct wpa_bss *bss =
@@ -11745,4 +11769,57 @@ void wpas_p2p_update_dev_addr(struct wpa_supplicant *wpa_s)
 {
 	os_memcpy(wpa_s->global->p2p_dev_addr, wpa_s->own_addr, ETH_ALEN);
 	p2p_set_dev_addr(wpa_s->global->p2p, wpa_s->own_addr);
+}
+
+
+static void wpas_p2p_set_disabled(struct wpa_supplicant *wpa_s)
+{
+	wpa_printf(MSG_DEBUG, "P2P: Disabled");
+
+	if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_DEDICATED_P2P_DEVICE) ||
+	    wpa_s->p2p_mgmt) {
+		wpa_printf(MSG_DEBUG,
+			   "P2P: Disable only implemented on parent interface");
+	} else {
+		if (wpa_s->global->p2p_init_wpa_s &&
+		    wpa_s->global->p2p &&
+		    wpa_s->global->p2p_init_wpa_s->parent == wpa_s) {
+			wpa_supplicant_remove_iface(
+				wpa_s->global, wpa_s->global->p2p_init_wpa_s,
+				0);
+		} else {
+			wpa_printf(MSG_DEBUG, "P2P: Not global P2P owner");
+		}
+	}
+}
+
+
+static void wpas_p2p_set_enabled(struct wpa_supplicant *wpa_s)
+{
+	wpa_printf(MSG_DEBUG, "P2P: Enabled");
+
+	if (!(wpa_s->drv_flags & WPA_DRIVER_FLAGS_DEDICATED_P2P_DEVICE) ||
+	    wpa_s->p2p_mgmt) {
+		wpa_printf(MSG_INFO,
+			   "P2P: Enabling only implemented on parent interface");
+	} else if (!wpa_s->global->p2p &&
+		   !wpa_s->global->p2p_disabled) {
+		if (wpas_p2p_add_p2pdev_interface(
+			    wpa_s, wpa_s->global->params.conf_p2p_dev) < 0) {
+			wpa_printf(MSG_DEBUG,
+				   "P2P: Failed to enable P2P Device interface");
+		}
+	} else {
+		wpa_printf(MSG_DEBUG,
+			   "P2P: Not enabling, global P2P configured or globally disabled");
+	}
+}
+
+
+void wpas_p2p_disabled_changed(struct wpa_supplicant *wpa_s)
+{
+	if (wpa_s->conf->p2p_disabled)
+		wpas_p2p_set_disabled(wpa_s);
+	else
+		wpas_p2p_set_enabled(wpa_s);
 }
